@@ -48,19 +48,25 @@ interface Warehouse {
   type: 'storage' | 'production' | 'crafting';
 }
 
-const GAME_WIDTH = 800;
-const GAME_HEIGHT = 600;
+const GAME_WIDTH = 1200;
+const GAME_HEIGHT = 800;
 const PLAYER_SIZE = 20;
 const PLAYER_SPEED = 3;
 
 const Index = () => {
   const gameRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const gameLoopRef = useRef<number>();
   const [keys, setKeys] = useState<Set<string>>(new Set());
+  const [gameState, setGameState] = useState<'menu' | 'playing'>('menu');
   
   const [player, setPlayer] = useState<Player>({
-    x: 100,
-    y: 100,
-    inventory: [],
+    x: 400,
+    y: 300,
+    inventory: [
+      { id: 'wood', name: 'Дерево', icon: '🪵', quantity: 3, maxStack: 50, rarity: 'common' },
+      { id: 'iron', name: 'Железо', icon: '🔧', quantity: 2, maxStack: 100, rarity: 'common' }
+    ],
     maxInventorySlots: 12,
     health: 100,
     maxHealth: 100,
@@ -116,27 +122,211 @@ const Index = () => {
     { id: '3', itemId: 'crystal', x: 500, y: 300, quantity: 1, collected: false }
   ]);
 
-  const [gameMode, setGameMode] = useState<'playing' | 'inventory' | 'warehouse'>('playing');
+  const [gameMode, setGameMode] = useState<'playing' | 'inventory' | 'warehouse' | 'crafting'>('playing');
+  const [craftingOpen, setCraftingOpen] = useState(false);
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('');
+
+  // Генерация мира
+  const generateWorld = () => {
+    const newDrops = [];
+    for (let i = 0; i < 15; i++) {
+      newDrops.push({
+        id: `drop-${i}`,
+        itemId: Math.random() > 0.5 ? 'wood' : 'iron',
+        x: 50 + Math.random() * (GAME_WIDTH - 100),
+        y: 50 + Math.random() * (GAME_HEIGHT - 100),
+        quantity: 1 + Math.floor(Math.random() * 3),
+        collected: false
+      });
+    }
+    setItemDrops(newDrops);
+  };
+
+  // 3D рендеринг
+  const render3D = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Очистка экрана
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Фон неба
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#87CEEB');
+    gradient.addColorStop(0.7, '#98FB98');
+    gradient.addColorStop(1, '#90EE90');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Изометрическая проекция
+    const project3D = (x: number, y: number, z: number = 0) => {
+      const isoX = (x - y) * 0.8;
+      const isoY = (x + y) * 0.4 - z * 0.6;
+      return { 
+        x: canvas.width / 2 + isoX - (player.x - player.y) * 0.8,
+        y: canvas.height / 2 + isoY - (player.x + player.y) * 0.4
+      };
+    };
+
+    // Рендеринг складов как 3D блоки
+    warehouses.forEach(warehouse => {
+      const pos = project3D(warehouse.x, warehouse.y, 0);
+      const topPos = project3D(warehouse.x, warehouse.y, 30);
+      
+      // Тень
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.fillRect(pos.x - 30, pos.y + 10, 60, 20);
+      
+      // Основание
+      ctx.fillStyle = getWarehouseColor(warehouse.type);
+      ctx.fillRect(pos.x - 25, pos.y - 10, 50, 40);
+      
+      // Верх (3D эффект)
+      ctx.fillStyle = '#ffffff40';
+      ctx.fillRect(pos.x - 20, topPos.y - 5, 40, 30);
+      
+      // Иконка
+      ctx.fillStyle = 'white';
+      ctx.font = '16px Arial';
+      ctx.textAlign = 'center';
+      const icon = warehouse.type === 'storage' ? '📦' : 
+                   warehouse.type === 'production' ? '🏭' : '🔨';
+      ctx.fillText(icon, pos.x, pos.y + 5);
+    });
+
+    // Рендеринг предметов
+    itemDrops.filter(drop => !drop.collected).forEach(drop => {
+      const pos = project3D(drop.x, drop.y, 5);
+      
+      // Блеск предмета
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFD700';
+      ctx.fill();
+      ctx.strokeStyle = '#FFA500';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      
+      // Иконка предмета
+      ctx.fillStyle = 'white';
+      ctx.font = '12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(getItemData(drop.itemId)?.icon || '?', pos.x, pos.y + 3);
+    });
+
+    // Рендеринг игрока как 3D персонаж
+    const playerPos = project3D(player.x, player.y, 0);
+    
+    // Тень игрока
+    ctx.beginPath();
+    ctx.ellipse(playerPos.x, playerPos.y + 15, 8, 4, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fill();
+    
+    // Тело игрока
+    ctx.beginPath();
+    ctx.arc(playerPos.x, playerPos.y, 12, 0, Math.PI * 2);
+    ctx.fillStyle = '#FF6B35';
+    ctx.fill();
+    ctx.strokeStyle = '#E55100';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Лицо
+    ctx.fillStyle = 'white';
+    ctx.fillRect(playerPos.x - 3, playerPos.y - 4, 2, 2);
+    ctx.fillRect(playerPos.x + 1, playerPos.y - 4, 2, 2);
+    ctx.fillStyle = 'black';
+    ctx.fillRect(playerPos.x - 3, playerPos.y + 1, 6, 1);
+
+    // UI поверх 3D
+    renderUI(ctx);
+  }, [player, warehouses, itemDrops]);
+
+  // Рендеринг UI
+  const renderUI = (ctx: CanvasRenderingContext2D) => {
+    const canvas = canvasRef.current!;
+    
+    // Здоровье
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(10, 10, 200, 25);
+    ctx.fillStyle = '#FF4444';
+    ctx.fillRect(12, 12, (player.health / player.maxHealth) * 196, 21);
+    ctx.fillStyle = 'white';
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`HP: ${player.health}/${player.maxHealth}`, 15, 27);
+
+    // Опыт
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(10, 40, 200, 20);
+    ctx.fillStyle = '#4CAF50';
+    const expProgress = (player.experience % 100) / 100;
+    ctx.fillRect(12, 42, expProgress * 196, 16);
+    ctx.fillStyle = 'white';
+    ctx.fillText(`Уровень ${player.level} | Опыт: ${player.experience}`, 15, 54);
+
+    // Быстрый инвентарь
+    const slotSize = 40;
+    const startX = canvas.width / 2 - (4 * slotSize) / 2;
+    const startY = canvas.height - 60;
+    
+    for (let i = 0; i < 4; i++) {
+      const x = startX + i * slotSize;
+      const item = player.inventory[i];
+      
+      ctx.fillStyle = 'rgba(0,0,0,0.8)';
+      ctx.fillRect(x, startY, slotSize - 4, slotSize - 4);
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, startY, slotSize - 4, slotSize - 4);
+      
+      if (item) {
+        ctx.fillStyle = 'white';
+        ctx.font = '18px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(item.icon, x + slotSize/2, startY + 22);
+        ctx.font = '10px Arial';
+        ctx.fillText(item.quantity.toString(), x + slotSize - 10, startY + slotSize - 8);
+      }
+    }
+
+    // Подсказки
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(canvas.width - 150, 10, 140, 70);
+    ctx.fillStyle = 'white';
+    ctx.font = '11px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('WASD - движение', canvas.width - 145, 25);
+    ctx.fillText('E - взаимодействие', canvas.width - 145, 40);
+    ctx.fillText('C - крафтинг', canvas.width - 145, 55);
+    ctx.fillText('I - инвентарь', canvas.width - 145, 70);
+  };
 
   // Система управления
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      setKeys(prev => new Set(prev).add(e.key.toLowerCase()));
+      if (gameState !== 'playing') return;
+      
+      const key = e.key.toLowerCase();
+      setKeys(prev => new Set(prev).add(key));
       
       // Быстрые клавиши
-      if (e.key.toLowerCase() === 'i') {
-        setGameMode(prev => prev === 'inventory' ? 'playing' : 'inventory');
-      }
-      if (e.key.toLowerCase() === 'e') {
-        // Проверяем близость к складу
-        const nearWarehouse = warehouses.find(w => 
-          Math.abs(player.x - (w.x + w.width/2)) < 50 && 
-          Math.abs(player.y - (w.y + w.height/2)) < 50
+      if (key === 'i') setGameMode('inventory');
+      if (key === 'c') setCraftingOpen(true);
+      if (key === 'escape') setGameState('menu');
+      if (key === 'e') {
+        // Сбор предметов рядом
+        const nearDrop = itemDrops.find(drop => 
+          !drop.collected &&
+          Math.abs(player.x - drop.x) < 40 && 
+          Math.abs(player.y - drop.y) < 40
         );
-        if (nearWarehouse) {
-          setSelectedWarehouse(nearWarehouse.id);
-          setGameMode('warehouse');
+        if (nearDrop) {
+          collectItem(nearDrop);
         }
       }
     };
@@ -156,100 +346,154 @@ const Index = () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [player, warehouses]);
+  }, [gameState, player, itemDrops]);
 
-  // Игровой цикл движения
+  // Игровой цикл
   useEffect(() => {
-    const gameLoop = setInterval(() => {
-      if (gameMode !== 'playing') return;
+    if (gameState !== 'playing') return;
 
-      setPlayer(prev => {
-        let newX = prev.x;
-        let newY = prev.y;
+    const gameLoop = () => {
+      // Обновление движения
+      if (keys.size > 0) {
+        setPlayer(prev => {
+          let newX = prev.x;
+          let newY = prev.y;
 
-        if (keys.has('w') || keys.has('arrowup')) newY -= PLAYER_SPEED;
-        if (keys.has('s') || keys.has('arrowdown')) newY += PLAYER_SPEED;
-        if (keys.has('a') || keys.has('arrowleft')) newX -= PLAYER_SPEED;
-        if (keys.has('d') || keys.has('arrowright')) newX += PLAYER_SPEED;
+          if (keys.has('w')) newY -= PLAYER_SPEED;
+          if (keys.has('s')) newY += PLAYER_SPEED;
+          if (keys.has('a')) newX -= PLAYER_SPEED;
+          if (keys.has('d')) newX += PLAYER_SPEED;
 
-        // Границы игрового поля
-        newX = Math.max(PLAYER_SIZE/2, Math.min(GAME_WIDTH - PLAYER_SIZE/2, newX));
-        newY = Math.max(PLAYER_SIZE/2, Math.min(GAME_HEIGHT - PLAYER_SIZE/2, newY));
+          // Границы
+          newX = Math.max(30, Math.min(GAME_WIDTH - 30, newX));
+          newY = Math.max(30, Math.min(GAME_HEIGHT - 30, newY));
 
-        // Коллизия со складами
-        const colliding = warehouses.some(w => 
-          newX - PLAYER_SIZE/2 < w.x + w.width &&
-          newX + PLAYER_SIZE/2 > w.x &&
-          newY - PLAYER_SIZE/2 < w.y + w.height &&
-          newY + PLAYER_SIZE/2 > w.y
-        );
-
-        if (colliding) {
-          return prev;
-        }
-
-        return { ...prev, x: newX, y: newY };
-      });
-    }, 16); // ~60 FPS
-
-    return () => clearInterval(gameLoop);
-  }, [keys, gameMode, warehouses]);
-
-  // Сбор предметов
-  useEffect(() => {
-    const checkItemCollection = () => {
-      setItemDrops(prev => {
-        const newDrops = [...prev];
-        let collected = false;
-
-        newDrops.forEach(drop => {
-          if (!drop.collected) {
-            const distance = Math.sqrt(
-              Math.pow(player.x - drop.x, 2) + Math.pow(player.y - drop.y, 2)
-            );
-
-            if (distance < 30) {
-              drop.collected = true;
-              collected = true;
-
-              // Добавляем в инвентарь
-              setPlayer(prevPlayer => {
-                const newInventory = [...prevPlayer.inventory];
-                const existingItem = newInventory.find(item => item.id === drop.itemId);
-
-                if (existingItem) {
-                  existingItem.quantity += drop.quantity;
-                } else if (newInventory.length < prevPlayer.maxInventorySlots) {
-                  const itemData = getItemData(drop.itemId);
-                  if (itemData) {
-                    newInventory.push({
-                      ...itemData,
-                      quantity: drop.quantity
-                    });
-                  }
-                }
-
-                return {
-                  ...prevPlayer,
-                  inventory: newInventory,
-                  experience: prevPlayer.experience + 10
-                };
-              });
-
-              toast.success(`Собрано: ${drop.quantity} ${getItemData(drop.itemId)?.name || drop.itemId}`);
+          // Автосбор предметов
+          itemDrops.forEach(drop => {
+            if (!drop.collected && 
+                Math.abs(newX - drop.x) < 25 && 
+                Math.abs(newY - drop.y) < 25) {
+              collectItem(drop);
             }
-          }
-        });
+          });
 
-        return newDrops;
-      });
+          return { ...prev, x: newX, y: newY };
+        });
+      }
+      
+      // Рендеринг
+      render3D();
+      
+      gameLoopRef.current = requestAnimationFrame(gameLoop);
     };
 
-    if (gameMode === 'playing') {
-      const interval = setInterval(checkItemCollection, 100);
-      return () => clearInterval(interval);
+    gameLoopRef.current = requestAnimationFrame(gameLoop);
+
+    return () => {
+      if (gameLoopRef.current) {
+        cancelAnimationFrame(gameLoopRef.current);
+      }
+    };
+  }, [gameState, keys, render3D]);
+
+  // Сбор предметов
+  const collectItem = (drop: ItemDrop) => {
+    setItemDrops(prev => 
+      prev.map(d => d.id === drop.id ? { ...d, collected: true } : d)
+    );
+    
+    setPlayer(prev => {
+      const newInventory = [...prev.inventory];
+      const existingItem = newInventory.find(item => item.id === drop.itemId);
+      
+      if (existingItem) {
+        existingItem.quantity += drop.quantity;
+      } else if (newInventory.length < prev.maxInventorySlots) {
+        const itemData = getItemData(drop.itemId);
+        if (itemData) {
+          newInventory.push({ ...itemData, quantity: drop.quantity });
+        }
+      }
+      
+      return { 
+        ...prev, 
+        inventory: newInventory,
+        experience: prev.experience + 5
+      };
+    });
+    
+    toast.success(`+${drop.quantity} ${getItemData(drop.itemId)?.name}`);
+  };
+
+  // Крафтинг рецепты
+  const recipes = [
+    {
+      id: 'wooden-sword',
+      name: 'Деревянный меч',
+      ingredients: [{ itemId: 'wood', quantity: 3 }, { itemId: 'iron', quantity: 1 }],
+      output: { itemId: 'wooden-sword', quantity: 1 }
+    },
+    {
+      id: 'wooden-pickaxe', 
+      name: 'Деревянная кирка',
+      ingredients: [{ itemId: 'wood', quantity: 2 }, { itemId: 'iron', quantity: 2 }],
+      output: { itemId: 'wooden-pickaxe', quantity: 1 }
     }
-  }, [player.x, player.y, gameMode]);
+  ];
+
+  // Функция крафтинга
+  const craft = (recipeId: string) => {
+    const recipe = recipes.find(r => r.id === recipeId);
+    if (!recipe) return;
+
+    // Проверка ресурсов
+    const canCraft = recipe.ingredients.every(ing => {
+      const item = player.inventory.find(i => i.id === ing.itemId);
+      return item && item.quantity >= ing.quantity;
+    });
+
+    if (!canCraft) {
+      toast.error('Недостаточно ресурсов!');
+      return;
+    }
+
+    setPlayer(prev => {
+      const newInventory = [...prev.inventory];
+      
+      // Убираем ресурсы
+      recipe.ingredients.forEach(ing => {
+        const item = newInventory.find(i => i.id === ing.itemId);
+        if (item) {
+          item.quantity -= ing.quantity;
+          if (item.quantity <= 0) {
+            const index = newInventory.indexOf(item);
+            newInventory.splice(index, 1);
+          }
+        }
+      });
+      
+      // Добавляем результат
+      const outputData = {
+        id: recipe.output.itemId,
+        name: recipe.name,
+        icon: recipe.output.itemId === 'wooden-sword' ? '⚔️' : '⛏️',
+        quantity: recipe.output.quantity,
+        maxStack: 1,
+        rarity: 'rare' as const
+      };
+      
+      newInventory.push(outputData);
+      
+      return {
+        ...prev,
+        inventory: newInventory,
+        experience: prev.experience + 20
+      };
+    });
+    
+    toast.success(`Создано: ${recipe.name}!`);
+    setCraftingOpen(false);
+  };
 
   const getItemData = (itemId: string): Omit<Item, 'quantity'> | null => {
     const itemsData: { [key: string]: Omit<Item, 'quantity'> } = {
@@ -280,6 +524,55 @@ const Index = () => {
     }
   };
 
+  // Главное меню
+  if (gameState === 'menu') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white flex items-center justify-center">
+        <div className="text-center space-y-8">
+          <div className="space-y-4">
+            <h1 className="text-6xl font-bold bg-gradient-to-r from-orange-400 to-blue-400 bg-clip-text text-transparent" style={{ fontFamily: 'Orbitron, monospace' }}>
+              3D КРАФТ ИГРА
+            </h1>
+            <p className="text-xl text-slate-300">Исследуй 3D мир, собирай ресурсы, создавай предметы!</p>
+          </div>
+          
+          <div className="space-y-4">
+            <Button 
+              onClick={() => {
+                setGameState('playing');
+                generateWorld();
+              }}
+              className="bg-gradient-to-r from-orange-600 to-orange-500 hover:from-orange-700 hover:to-orange-600 text-white px-8 py-4 text-xl font-bold"
+              size="lg"
+            >
+              <Icon name="Play" size={24} className="mr-3" />
+              ИГРАТЬ
+            </Button>
+            
+            <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+              <Button variant="outline" className="border-slate-600 text-white hover:bg-slate-800">
+                <Icon name="Settings" size={16} className="mr-2" />
+                Настройки
+              </Button>
+              
+              <Button variant="outline" className="border-slate-600 text-white hover:bg-slate-800">
+                <Icon name="Info" size={16} className="mr-2" />
+                О игре
+              </Button>
+            </div>
+          </div>
+          
+          <div className="text-sm text-slate-400 space-y-2">
+            <p>🎮 WASD - движение в 3D мире</p>
+            <p>⚡ E - взаимодействие/сбор</p>
+            <p>🔨 C - открыть крафтинг</p>
+            <p>🎒 I - инвентарь</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (gameMode === 'inventory') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
@@ -290,7 +583,7 @@ const Index = () => {
             </h1>
             <Button onClick={() => setGameMode('playing')} className="bg-orange-600 hover:bg-orange-700">
               <Icon name="ArrowLeft" size={16} className="mr-2" />
-              Вернуться в игру
+              Назад в игру
             </Button>
           </div>
 
@@ -479,202 +772,65 @@ const Index = () => {
     );
   }
 
+  // Основная игра с 3D canvas
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
-      {/* Заголовок */}
-      <div className="bg-gradient-to-r from-orange-600 to-blue-600 p-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <h1 className="text-3xl font-bold" style={{ fontFamily: 'Orbitron, monospace' }}>
-            3D Складской Симулятор
-          </h1>
-          <div className="flex items-center gap-4">
-            <Badge className="bg-white/20 text-white">
-              Уровень {player.level}
-            </Badge>
-            <Badge className="bg-white/20 text-white">
-              Опыт: {player.experience}
-            </Badge>
-          </div>
-        </div>
-      </div>
-
-      <div className="p-6">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-            {/* Игровое поле */}
-            <div className="lg:col-span-3">
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader>
-                  <CardTitle className="text-white flex items-center gap-2">
-                    <Icon name="Gamepad2" size={20} className="text-orange-400" />
-                    Игровое поле
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div 
-                    ref={gameRef}
-                    className="relative border-2 border-slate-600 rounded-lg overflow-hidden bg-gradient-to-br from-slate-700 to-slate-600"
-                    style={{ width: GAME_WIDTH, height: GAME_HEIGHT, margin: '0 auto' }}
-                    tabIndex={0}
-                  >
-                    {/* Склады */}
-                    {warehouses.map((warehouse) => (
-                      <div
-                        key={warehouse.id}
-                        className="absolute border-2 border-dashed rounded-lg flex items-center justify-center text-white font-bold"
-                        style={{
-                          left: warehouse.x,
-                          top: warehouse.y,
-                          width: warehouse.width,
-                          height: warehouse.height,
-                          backgroundColor: getWarehouseColor(warehouse.type) + '40',
-                          borderColor: getWarehouseColor(warehouse.type)
-                        }}
-                      >
-                        <div className="text-center">
-                          <div className="text-xs">{warehouse.name}</div>
-                          <div className="text-xs opacity-75">
-                            {warehouse.type === 'storage' && '📦'}
-                            {warehouse.type === 'production' && '🏭'}
-                            {warehouse.type === 'crafting' && '🔨'}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Предметы на земле */}
-                    {itemDrops.filter(drop => !drop.collected).map((drop) => (
-                      <div
-                        key={drop.id}
-                        className="absolute w-6 h-6 flex items-center justify-center rounded-full bg-yellow-400 border-2 border-yellow-600 animate-pulse"
-                        style={{
-                          left: drop.x - 12,
-                          top: drop.y - 12
-                        }}
-                      >
-                        <span className="text-xs">
-                          {getItemData(drop.itemId)?.icon || '?'}
-                        </span>
-                      </div>
-                    ))}
-
-                    {/* Игрок */}
-                    <div
-                      className="absolute bg-orange-500 border-2 border-orange-600 rounded-full flex items-center justify-center text-white font-bold transition-all duration-75"
-                      style={{
-                        left: player.x - PLAYER_SIZE/2,
-                        top: player.y - PLAYER_SIZE/2,
-                        width: PLAYER_SIZE,
-                        height: PLAYER_SIZE
-                      }}
-                    >
-                      👤
-                    </div>
-                  </div>
-
-                  {/* Управление */}
-                  <div className="mt-4 text-center text-sm text-slate-400">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                      <div>WASD / Стрелки - движение</div>
-                      <div>I - инвентарь</div>
-                      <div>E - склад (рядом)</div>
-                      <div>Собирайте предметы!</div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Боковая панель */}
-            <div className="space-y-6">
-              {/* Статус игрока */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader>
-                  <CardTitle className="text-white text-sm">Статус</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-slate-400">Здоровье</span>
-                      <span className="text-white">{player.health}/{player.maxHealth}</span>
-                    </div>
-                    <Progress value={(player.health / player.maxHealth) * 100} />
+    <div className="min-h-screen bg-black">
+      <canvas 
+        ref={canvasRef}
+        width={1200}
+        height={800}
+        className="w-full h-screen cursor-crosshair"
+        style={{ imageRendering: 'pixelated' }}
+      />
+      
+      {/* Модальные окна */}
+      {craftingOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <Card className="bg-slate-800 border-slate-700 w-96 max-w-full">
+            <CardHeader>
+              <CardTitle className="text-white flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <Icon name="Hammer" size={20} className="text-orange-400" />
+                  Крафтинг
+                </span>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => setCraftingOpen(false)}
+                  className="text-white hover:bg-slate-700"
+                >
+                  <Icon name="X" size={16} />
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {recipes.map(recipe => (
+                <div key={recipe.id} className="p-3 bg-slate-700 rounded-lg">
+                  <h4 className="font-medium text-white mb-2">{recipe.name}</h4>
+                  
+                  <div className="text-sm text-slate-300 mb-3">
+                    Требуется: {recipe.ingredients.map(ing => 
+                      `${ing.quantity} ${getItemData(ing.itemId)?.name}`
+                    ).join(', ')}
                   </div>
                   
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-slate-400">Инвентарь</span>
-                      <span className="text-white">{player.inventory.length}/{player.maxInventorySlots}</span>
-                    </div>
-                    <Progress value={(player.inventory.length / player.maxInventorySlots) * 100} />
-                  </div>
-                  
-                  <div className="pt-2">
-                    <Button 
-                      onClick={() => setGameMode('inventory')} 
-                      className="w-full bg-blue-600 hover:bg-blue-700"
-                    >
-                      <Icon name="Package" size={14} className="mr-2" />
-                      Открыть инвентарь
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Быстрый инвентарь */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader>
-                  <CardTitle className="text-white text-sm">Быстрые слоты</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-3 gap-2">
-                    {Array.from({ length: 6 }, (_, index) => {
-                      const item = player.inventory[index];
-                      return (
-                        <div
-                          key={index}
-                          className={`aspect-square border border-slate-600 rounded flex flex-col items-center justify-center text-xs ${
-                            item ? 'bg-slate-700' : 'bg-slate-800'
-                          }`}
-                        >
-                          {item ? (
-                            <>
-                              <div className="text-lg">{item.icon}</div>
-                              <div className="text-xs font-bold">{item.quantity}</div>
-                            </>
-                          ) : (
-                            <div className="text-slate-500">—</div>
-                          )}
-                        </div>
-                      );
+                  <Button 
+                    onClick={() => craft(recipe.id)}
+                    className="w-full bg-blue-600 hover:bg-blue-700"
+                    disabled={!recipe.ingredients.every(ing => {
+                      const item = player.inventory.find(i => i.id === ing.itemId);
+                      return item && item.quantity >= ing.quantity;
                     })}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Задания */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader>
-                  <CardTitle className="text-white text-sm">Задания</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="p-2 bg-slate-700 rounded text-xs">
-                    <div className="font-medium text-white">Сбор ресурсов</div>
-                    <div className="text-slate-400">Соберите 10 железа</div>
-                    <div className="text-yellow-400">{player.inventory.find(i => i.id === 'iron')?.quantity || 0}/10</div>
-                  </div>
-                  
-                  <div className="p-2 bg-slate-700 rounded text-xs">
-                    <div className="font-medium text-white">Исследователь</div>
-                    <div className="text-slate-400">Посетите все склады</div>
-                    <div className="text-yellow-400">0/3</div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
+                  >
+                    <Icon name="Plus" size={14} className="mr-2" />
+                    Создать
+                  </Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
         </div>
-      </div>
+      )}
     </div>
   );
 };
