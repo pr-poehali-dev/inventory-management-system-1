@@ -1,12 +1,9 @@
-import React, { useState, useCallback } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import Icon from '@/components/ui/icon';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { toast } from 'sonner';
 
 interface Item {
@@ -18,495 +15,665 @@ interface Item {
   rarity: 'common' | 'rare' | 'epic' | 'legendary';
 }
 
+interface Player {
+  x: number;
+  y: number;
+  inventory: Item[];
+  maxInventorySlots: number;
+  health: number;
+  maxHealth: number;
+  experience: number;
+  level: number;
+}
+
+interface ItemDrop {
+  id: string;
+  itemId: string;
+  x: number;
+  y: number;
+  quantity: number;
+  collected: boolean;
+}
+
 interface Warehouse {
   id: string;
   name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
   capacity: number;
   used: number;
   items: Item[];
-  type: 'storage' | 'production' | 'logistics';
+  type: 'storage' | 'production' | 'crafting';
 }
 
-interface Recipe {
-  id: string;
-  name: string;
-  ingredients: { itemId: string; quantity: number }[];
-  output: { itemId: string; quantity: number };
-  craftingTime: number;
-}
+const GAME_WIDTH = 800;
+const GAME_HEIGHT = 600;
+const PLAYER_SIZE = 20;
+const PLAYER_SPEED = 3;
 
 const Index = () => {
-  const [warehouses, setWarehouses] = useState<Warehouse[]>([
+  const gameRef = useRef<HTMLDivElement>(null);
+  const [keys, setKeys] = useState<Set<string>>(new Set());
+  
+  const [player, setPlayer] = useState<Player>({
+    x: 100,
+    y: 100,
+    inventory: [],
+    maxInventorySlots: 12,
+    health: 100,
+    maxHealth: 100,
+    experience: 0,
+    level: 1
+  });
+
+  const [warehouses] = useState<Warehouse[]>([
     {
       id: '1',
       name: 'Главный склад',
+      x: 200,
+      y: 150,
+      width: 120,
+      height: 80,
       capacity: 1000,
       used: 450,
       type: 'storage',
       items: [
-        { id: 'iron', name: 'Железо', icon: '🔩', quantity: 150, maxStack: 100, rarity: 'common' },
-        { id: 'wood', name: 'Дерево', icon: '🪵', quantity: 200, maxStack: 50, rarity: 'common' },
-        { id: 'crystal', name: 'Кристалл', icon: '💎', quantity: 10, maxStack: 10, rarity: 'epic' }
+        { id: 'iron', name: 'Железо', icon: '🔧', quantity: 150, maxStack: 100, rarity: 'common' },
+        { id: 'wood', name: 'Дерево', icon: '🪵', quantity: 200, maxStack: 50, rarity: 'common' }
       ]
     },
     {
       id: '2',
-      name: 'Производственный цех',
+      name: 'Цех производства',
+      x: 450,
+      y: 200,
+      width: 100,
+      height: 60,
       capacity: 500,
       used: 120,
       type: 'production',
-      items: [
-        { id: 'gear', name: 'Шестеренка', icon: '⚙️', quantity: 25, maxStack: 20, rarity: 'rare' },
-        { id: 'cable', name: 'Кабель', icon: '🔌', quantity: 45, maxStack: 30, rarity: 'common' }
-      ]
+      items: []
     },
     {
       id: '3',
-      name: 'Логистический центр',
-      capacity: 800,
-      used: 200,
-      type: 'logistics',
-      items: [
-        { id: 'container', name: 'Контейнер', icon: '📦', quantity: 30, maxStack: 25, rarity: 'common' }
-      ]
+      name: 'Крафт-станция',
+      x: 350,
+      y: 350,
+      width: 80,
+      height: 80,
+      capacity: 200,
+      used: 50,
+      type: 'crafting',
+      items: []
     }
   ]);
 
-  const [recipes] = useState<Recipe[]>([
-    {
-      id: 'gear-recipe',
-      name: 'Шестеренка',
-      ingredients: [{ itemId: 'iron', quantity: 3 }, { itemId: 'wood', quantity: 1 }],
-      output: { itemId: 'gear', quantity: 1 },
-      craftingTime: 30
-    },
-    {
-      id: 'cable-recipe',
-      name: 'Кабель',
-      ingredients: [{ itemId: 'iron', quantity: 2 }],
-      output: { itemId: 'cable', quantity: 2 },
-      craftingTime: 15
-    },
-    {
-      id: 'container-recipe',
-      name: 'Контейнер',
-      ingredients: [{ itemId: 'iron', quantity: 5 }, { itemId: 'wood', quantity: 3 }],
-      output: { itemId: 'container', quantity: 1 },
-      craftingTime: 45
-    }
+  const [itemDrops, setItemDrops] = useState<ItemDrop[]>([
+    { id: '1', itemId: 'iron', x: 300, y: 100, quantity: 5, collected: false },
+    { id: '2', itemId: 'wood', x: 150, y: 200, quantity: 3, collected: false },
+    { id: '3', itemId: 'crystal', x: 500, y: 300, quantity: 1, collected: false }
   ]);
 
+  const [gameMode, setGameMode] = useState<'playing' | 'inventory' | 'warehouse'>('playing');
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('');
-  const [craftingQueue, setCraftingQueue] = useState<{ recipeId: string; startTime: number }[]>([]);
 
-  // Защищенная функция перемещения предметов
-  const moveItem = useCallback((fromWarehouseId: string, toWarehouseId: string, itemId: string, quantity: number) => {
-    setWarehouses(prev => {
-      const newWarehouses = [...prev];
-      const fromWarehouse = newWarehouses.find(w => w.id === fromWarehouseId);
-      const toWarehouse = newWarehouses.find(w => w.id === toWarehouseId);
+  // Система управления
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      setKeys(prev => new Set(prev).add(e.key.toLowerCase()));
       
-      if (!fromWarehouse || !toWarehouse) {
-        toast.error('Склад не найден');
-        return prev;
+      // Быстрые клавиши
+      if (e.key.toLowerCase() === 'i') {
+        setGameMode(prev => prev === 'inventory' ? 'playing' : 'inventory');
       }
-
-      const item = fromWarehouse.items.find(i => i.id === itemId);
-      if (!item || item.quantity < quantity) {
-        toast.error('Недостаточно предметов');
-        return prev;
-      }
-
-      if (toWarehouse.used + quantity > toWarehouse.capacity) {
-        toast.error('Недостаточно места на складе');
-        return prev;
-      }
-
-      // Безопасное перемещение
-      item.quantity -= quantity;
-      if (item.quantity === 0) {
-        fromWarehouse.items = fromWarehouse.items.filter(i => i.id !== itemId);
-      }
-      fromWarehouse.used -= quantity;
-
-      const existingItem = toWarehouse.items.find(i => i.id === itemId);
-      if (existingItem) {
-        existingItem.quantity += quantity;
-      } else {
-        toWarehouse.items.push({ ...item, quantity });
-      }
-      toWarehouse.used += quantity;
-
-      toast.success(`Перемещено: ${quantity} ${item.name}`);
-      return newWarehouses;
-    });
-  }, []);
-
-  // Защищенный крафтинг
-  const startCrafting = useCallback((recipeId: string) => {
-    const recipe = recipes.find(r => r.id === recipeId);
-    if (!recipe) return;
-
-    // Проверка ресурсов
-    const mainWarehouse = warehouses.find(w => w.type === 'storage');
-    if (!mainWarehouse) {
-      toast.error('Главный склад не найден');
-      return;
-    }
-
-    for (const ingredient of recipe.ingredients) {
-      const item = mainWarehouse.items.find(i => i.id === ingredient.itemId);
-      if (!item || item.quantity < ingredient.quantity) {
-        toast.error(`Недостаточно ресурсов: ${ingredient.itemId}`);
-        return;
-      }
-    }
-
-    // Списание ресурсов
-    setWarehouses(prev => {
-      const newWarehouses = [...prev];
-      const warehouse = newWarehouses.find(w => w.type === 'storage');
-      if (!warehouse) return prev;
-
-      for (const ingredient of recipe.ingredients) {
-        const item = warehouse.items.find(i => i.id === ingredient.itemId);
-        if (item) {
-          item.quantity -= ingredient.quantity;
-          warehouse.used -= ingredient.quantity;
-          if (item.quantity === 0) {
-            warehouse.items = warehouse.items.filter(i => i.id !== ingredient.itemId);
-          }
+      if (e.key.toLowerCase() === 'e') {
+        // Проверяем близость к складу
+        const nearWarehouse = warehouses.find(w => 
+          Math.abs(player.x - (w.x + w.width/2)) < 50 && 
+          Math.abs(player.y - (w.y + w.height/2)) < 50
+        );
+        if (nearWarehouse) {
+          setSelectedWarehouse(nearWarehouse.id);
+          setGameMode('warehouse');
         }
       }
+    };
 
-      return newWarehouses;
-    });
-
-    // Добавление в очередь
-    setCraftingQueue(prev => [...prev, { recipeId, startTime: Date.now() }]);
-    
-    setTimeout(() => {
-      setCraftingQueue(prev => prev.filter(item => item.recipeId !== recipeId || item.startTime !== Date.now()));
-      
-      // Добавление результата
-      setWarehouses(prev => {
-        const newWarehouses = [...prev];
-        const productionWarehouse = newWarehouses.find(w => w.type === 'production');
-        if (!productionWarehouse) return prev;
-
-        const existingItem = productionWarehouse.items.find(i => i.id === recipe.output.itemId);
-        if (existingItem) {
-          existingItem.quantity += recipe.output.quantity;
-        } else {
-          productionWarehouse.items.push({
-            id: recipe.output.itemId,
-            name: recipe.name,
-            icon: '⚙️',
-            quantity: recipe.output.quantity,
-            maxStack: 20,
-            rarity: 'rare'
-          });
-        }
-        productionWarehouse.used += recipe.output.quantity;
-
-        return newWarehouses;
+    const handleKeyUp = (e: KeyboardEvent) => {
+      setKeys(prev => {
+        const newKeys = new Set(prev);
+        newKeys.delete(e.key.toLowerCase());
+        return newKeys;
       });
-      
-      toast.success(`Создано: ${recipe.output.quantity} ${recipe.name}`);
-    }, recipe.craftingTime * 1000);
+    };
 
-    toast.info(`Начат крафтинг: ${recipe.name}`);
-  }, [warehouses, recipes]);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [player, warehouses]);
+
+  // Игровой цикл движения
+  useEffect(() => {
+    const gameLoop = setInterval(() => {
+      if (gameMode !== 'playing') return;
+
+      setPlayer(prev => {
+        let newX = prev.x;
+        let newY = prev.y;
+
+        if (keys.has('w') || keys.has('arrowup')) newY -= PLAYER_SPEED;
+        if (keys.has('s') || keys.has('arrowdown')) newY += PLAYER_SPEED;
+        if (keys.has('a') || keys.has('arrowleft')) newX -= PLAYER_SPEED;
+        if (keys.has('d') || keys.has('arrowright')) newX += PLAYER_SPEED;
+
+        // Границы игрового поля
+        newX = Math.max(PLAYER_SIZE/2, Math.min(GAME_WIDTH - PLAYER_SIZE/2, newX));
+        newY = Math.max(PLAYER_SIZE/2, Math.min(GAME_HEIGHT - PLAYER_SIZE/2, newY));
+
+        // Коллизия со складами
+        const colliding = warehouses.some(w => 
+          newX - PLAYER_SIZE/2 < w.x + w.width &&
+          newX + PLAYER_SIZE/2 > w.x &&
+          newY - PLAYER_SIZE/2 < w.y + w.height &&
+          newY + PLAYER_SIZE/2 > w.y
+        );
+
+        if (colliding) {
+          return prev;
+        }
+
+        return { ...prev, x: newX, y: newY };
+      });
+    }, 16); // ~60 FPS
+
+    return () => clearInterval(gameLoop);
+  }, [keys, gameMode, warehouses]);
+
+  // Сбор предметов
+  useEffect(() => {
+    const checkItemCollection = () => {
+      setItemDrops(prev => {
+        const newDrops = [...prev];
+        let collected = false;
+
+        newDrops.forEach(drop => {
+          if (!drop.collected) {
+            const distance = Math.sqrt(
+              Math.pow(player.x - drop.x, 2) + Math.pow(player.y - drop.y, 2)
+            );
+
+            if (distance < 30) {
+              drop.collected = true;
+              collected = true;
+
+              // Добавляем в инвентарь
+              setPlayer(prevPlayer => {
+                const newInventory = [...prevPlayer.inventory];
+                const existingItem = newInventory.find(item => item.id === drop.itemId);
+
+                if (existingItem) {
+                  existingItem.quantity += drop.quantity;
+                } else if (newInventory.length < prevPlayer.maxInventorySlots) {
+                  const itemData = getItemData(drop.itemId);
+                  if (itemData) {
+                    newInventory.push({
+                      ...itemData,
+                      quantity: drop.quantity
+                    });
+                  }
+                }
+
+                return {
+                  ...prevPlayer,
+                  inventory: newInventory,
+                  experience: prevPlayer.experience + 10
+                };
+              });
+
+              toast.success(`Собрано: ${drop.quantity} ${getItemData(drop.itemId)?.name || drop.itemId}`);
+            }
+          }
+        });
+
+        return newDrops;
+      });
+    };
+
+    if (gameMode === 'playing') {
+      const interval = setInterval(checkItemCollection, 100);
+      return () => clearInterval(interval);
+    }
+  }, [player.x, player.y, gameMode]);
+
+  const getItemData = (itemId: string): Omit<Item, 'quantity'> | null => {
+    const itemsData: { [key: string]: Omit<Item, 'quantity'> } = {
+      iron: { id: 'iron', name: 'Железо', icon: '🔧', maxStack: 100, rarity: 'common' },
+      wood: { id: 'wood', name: 'Дерево', icon: '🪵', maxStack: 50, rarity: 'common' },
+      crystal: { id: 'crystal', name: 'Кристалл', icon: '💎', maxStack: 10, rarity: 'epic' },
+      gear: { id: 'gear', name: 'Шестеренка', icon: '⚙️', maxStack: 20, rarity: 'rare' }
+    };
+    return itemsData[itemId] || null;
+  };
 
   const getRarityColor = (rarity: string) => {
     switch (rarity) {
-      case 'common': return 'bg-gray-100 text-gray-800';
-      case 'rare': return 'bg-blue-100 text-blue-800';
-      case 'epic': return 'bg-purple-100 text-purple-800';
-      case 'legendary': return 'bg-orange-100 text-orange-800';
+      case 'common': return 'bg-gray-100 text-gray-800 border-gray-300';
+      case 'rare': return 'bg-blue-100 text-blue-800 border-blue-300';
+      case 'epic': return 'bg-purple-100 text-purple-800 border-purple-300';
+      case 'legendary': return 'bg-orange-100 text-orange-800 border-orange-300';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
 
-  const getWarehouseTypeIcon = (type: string) => {
+  const getWarehouseColor = (type: string) => {
     switch (type) {
-      case 'storage': return 'Warehouse';
-      case 'production': return 'Factory';
-      case 'logistics': return 'Truck';
-      default: return 'Package';
+      case 'storage': return '#FF6B35';
+      case 'production': return '#4A90E2';
+      case 'crafting': return '#9B59B6';
+      default: return '#6C7B7F';
     }
   };
 
+  if (gameMode === 'inventory') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
+        <div className="max-w-4xl mx-auto">
+          <div className="flex items-center justify-between mb-6">
+            <h1 className="text-3xl font-bold" style={{ fontFamily: 'Orbitron, monospace' }}>
+              Инвентарь игрока
+            </h1>
+            <Button onClick={() => setGameMode('playing')} className="bg-orange-600 hover:bg-orange-700">
+              <Icon name="ArrowLeft" size={16} className="mr-2" />
+              Вернуться в игру
+            </Button>
+          </div>
+
+          {/* Статистика игрока */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="pt-6">
+                <div className="text-center">
+                  <div className="text-2xl mb-2">👤</div>
+                  <div className="text-sm text-slate-400">Уровень</div>
+                  <div className="text-xl font-bold text-white">{player.level}</div>
+                </div>
+              </CardContent>
+            </Card>
+            
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="pt-6">
+                <div className="text-center">
+                  <div className="text-2xl mb-2">❤️</div>
+                  <div className="text-sm text-slate-400">Здоровье</div>
+                  <Progress value={(player.health / player.maxHealth) * 100} className="mt-2" />
+                </div>
+              </CardContent>
+            </Card>
+            
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="pt-6">
+                <div className="text-center">
+                  <div className="text-2xl mb-2">⭐</div>
+                  <div className="text-sm text-slate-400">Опыт</div>
+                  <div className="text-xl font-bold text-white">{player.experience}</div>
+                </div>
+              </CardContent>
+            </Card>
+            
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="pt-6">
+                <div className="text-center">
+                  <div className="text-2xl mb-2">🎒</div>
+                  <div className="text-sm text-slate-400">Слоты</div>
+                  <div className="text-xl font-bold text-white">
+                    {player.inventory.length}/{player.maxInventorySlots}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Инвентарь */}
+          <Card className="bg-slate-800 border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-white flex items-center gap-2">
+                <Icon name="Package" size={20} className="text-orange-400" />
+                Предметы в инвентаре
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-6 gap-3">
+                {Array.from({ length: player.maxInventorySlots }, (_, index) => {
+                  const item = player.inventory[index];
+                  return (
+                    <div
+                      key={index}
+                      className={`aspect-square border-2 border-dashed border-slate-600 rounded-lg flex flex-col items-center justify-center p-2 ${
+                        item ? `${getRarityColor(item.rarity)} border-solid` : 'bg-slate-700'
+                      }`}
+                    >
+                      {item ? (
+                        <>
+                          <div className="text-2xl mb-1">{item.icon}</div>
+                          <div className="text-xs font-medium text-center">{item.name}</div>
+                          <div className="text-xs font-bold">{item.quantity}</div>
+                        </>
+                      ) : (
+                        <div className="text-slate-500 text-xs">Пусто</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  if (gameMode === 'warehouse') {
+    const warehouse = warehouses.find(w => w.id === selectedWarehouse);
+    if (!warehouse) {
+      setGameMode('playing');
+      return null;
+    }
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
+        <div className="max-w-6xl mx-auto">
+          <div className="flex items-center justify-between mb-6">
+            <h1 className="text-3xl font-bold" style={{ fontFamily: 'Orbitron, monospace' }}>
+              {warehouse.name}
+            </h1>
+            <Button onClick={() => setGameMode('playing')} className="bg-orange-600 hover:bg-orange-700">
+              <Icon name="ArrowLeft" size={16} className="mr-2" />
+              Закрыть склад
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Содержимое склада */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader>
+                <CardTitle className="text-white flex items-center gap-2">
+                  <Icon name="Warehouse" size={20} className="text-orange-400" />
+                  Содержимое склада
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {warehouse.items.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between p-3 bg-slate-700 rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <span className="text-2xl">{item.icon}</span>
+                        <div>
+                          <div className="font-medium text-white">{item.name}</div>
+                          <div className="text-sm text-slate-400">Количество: {item.quantity}</div>
+                        </div>
+                      </div>
+                      <Badge className={getRarityColor(item.rarity)}>
+                        {item.rarity}
+                      </Badge>
+                    </div>
+                  ))}
+                  
+                  {warehouse.items.length === 0 && (
+                    <div className="text-center text-slate-400 py-8">
+                      <Icon name="Package" size={48} className="mx-auto mb-4" />
+                      <p>Склад пуст</p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Инвентарь игрока для обмена */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader>
+                <CardTitle className="text-white flex items-center gap-2">
+                  <Icon name="User" size={20} className="text-blue-400" />
+                  Ваш инвентарь
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {player.inventory.map((item, index) => (
+                    <div key={index} className="flex items-center justify-between p-3 bg-slate-700 rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <span className="text-2xl">{item.icon}</span>
+                        <div>
+                          <div className="font-medium text-white">{item.name}</div>
+                          <div className="text-sm text-slate-400">Количество: {item.quantity}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge className={getRarityColor(item.rarity)}>
+                          {item.rarity}
+                        </Badge>
+                        <Button size="sm" className="bg-green-600 hover:bg-green-700">
+                          <Icon name="ArrowUp" size={14} />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {player.inventory.length === 0 && (
+                    <div className="text-center text-slate-400 py-8">
+                      <Icon name="Package" size={48} className="mx-auto mb-4" />
+                      <p>Инвентарь пуст</p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-orange-600 to-blue-600 p-6">
-        <div className="max-w-7xl mx-auto">
-          <h1 className="text-4xl font-bold mb-2" style={{ fontFamily: 'Orbitron, monospace' }}>
-            3D Складской Инвентарь
+      {/* Заголовок */}
+      <div className="bg-gradient-to-r from-orange-600 to-blue-600 p-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <h1 className="text-3xl font-bold" style={{ fontFamily: 'Orbitron, monospace' }}>
+            3D Складской Симулятор
           </h1>
-          <p className="text-orange-100">Управление складами и производством с защитой от дублирования</p>
+          <div className="flex items-center gap-4">
+            <Badge className="bg-white/20 text-white">
+              Уровень {player.level}
+            </Badge>
+            <Badge className="bg-white/20 text-white">
+              Опыт: {player.experience}
+            </Badge>
+          </div>
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto p-6">
-        <Tabs defaultValue="warehouses" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3 bg-slate-800 border-slate-700">
-            <TabsTrigger value="warehouses" className="data-[state=active]:bg-orange-600">
-              <Icon name="Warehouse" className="mr-2" size={16} />
-              Склады
-            </TabsTrigger>
-            <TabsTrigger value="crafting" className="data-[state=active]:bg-blue-600">
-              <Icon name="Hammer" className="mr-2" size={16} />
-              Крафтинг
-            </TabsTrigger>
-            <TabsTrigger value="logistics" className="data-[state=active]:bg-purple-600">
-              <Icon name="Truck" className="mr-2" size={16} />
-              Логистика
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="warehouses" className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {warehouses.map((warehouse) => (
-                <Card key={warehouse.id} className="bg-slate-800 border-slate-700 hover:bg-slate-750 transition-all duration-300 hover:scale-105 hover:shadow-2xl">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-white flex items-center gap-2">
-                        <Icon name={getWarehouseTypeIcon(warehouse.type)} size={20} className="text-orange-400" />
-                        {warehouse.name}
-                      </CardTitle>
-                      <Badge className={`${
-                        warehouse.type === 'storage' ? 'bg-orange-600' :
-                        warehouse.type === 'production' ? 'bg-blue-600' : 'bg-purple-600'
-                      }`}>
-                        {warehouse.type === 'storage' ? 'Хранение' :
-                         warehouse.type === 'production' ? 'Производство' : 'Логистика'}
-                      </Badge>
-                    </div>
-                    <CardDescription className="text-slate-400">
-                      Загрузка: {warehouse.used}/{warehouse.capacity}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <Progress 
-                      value={(warehouse.used / warehouse.capacity) * 100} 
-                      className="mb-4"
-                    />
-                    
-                    <div className="space-y-2">
-                      {warehouse.items.slice(0, 3).map((item) => (
-                        <div key={item.id} className="flex items-center justify-between p-2 bg-slate-700 rounded-lg">
-                          <div className="flex items-center gap-2">
-                            <span className="text-lg">{item.icon}</span>
-                            <span className="text-sm text-white">{item.name}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Badge className={getRarityColor(item.rarity)}>
-                              {item.quantity}
-                            </Badge>
+      <div className="p-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            {/* Игровое поле */}
+            <div className="lg:col-span-3">
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader>
+                  <CardTitle className="text-white flex items-center gap-2">
+                    <Icon name="Gamepad2" size={20} className="text-orange-400" />
+                    Игровое поле
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div 
+                    ref={gameRef}
+                    className="relative border-2 border-slate-600 rounded-lg overflow-hidden bg-gradient-to-br from-slate-700 to-slate-600"
+                    style={{ width: GAME_WIDTH, height: GAME_HEIGHT, margin: '0 auto' }}
+                    tabIndex={0}
+                  >
+                    {/* Склады */}
+                    {warehouses.map((warehouse) => (
+                      <div
+                        key={warehouse.id}
+                        className="absolute border-2 border-dashed rounded-lg flex items-center justify-center text-white font-bold"
+                        style={{
+                          left: warehouse.x,
+                          top: warehouse.y,
+                          width: warehouse.width,
+                          height: warehouse.height,
+                          backgroundColor: getWarehouseColor(warehouse.type) + '40',
+                          borderColor: getWarehouseColor(warehouse.type)
+                        }}
+                      >
+                        <div className="text-center">
+                          <div className="text-xs">{warehouse.name}</div>
+                          <div className="text-xs opacity-75">
+                            {warehouse.type === 'storage' && '📦'}
+                            {warehouse.type === 'production' && '🏭'}
+                            {warehouse.type === 'crafting' && '🔨'}
                           </div>
                         </div>
-                      ))}
-                      
-                      {warehouse.items.length > 3 && (
-                        <div className="text-xs text-slate-400 text-center pt-2">
-                          +{warehouse.items.length - 3} предметов
-                        </div>
-                      )}
-                    </div>
-                    
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button className="w-full mt-4 bg-orange-600 hover:bg-orange-700">
-                          <Icon name="Eye" size={16} className="mr-2" />
-                          Подробнее
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl">
-                        <DialogHeader>
-                          <DialogTitle className="flex items-center gap-2">
-                            <Icon name={getWarehouseTypeIcon(warehouse.type)} size={20} className="text-orange-400" />
-                            {warehouse.name}
-                          </DialogTitle>
-                          <DialogDescription>
-                            Детальная информация о складе
-                          </DialogDescription>
-                        </DialogHeader>
-                        <div className="space-y-4">
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="bg-slate-700 p-3 rounded-lg">
-                              <div className="text-sm text-slate-400">Вместимость</div>
-                              <div className="text-xl font-bold text-white">{warehouse.capacity}</div>
-                            </div>
-                            <div className="bg-slate-700 p-3 rounded-lg">
-                              <div className="text-sm text-slate-400">Использовано</div>
-                              <div className="text-xl font-bold text-white">{warehouse.used}</div>
-                            </div>
-                          </div>
-                          
-                          <div className="space-y-2">
-                            <h4 className="font-semibold">Предметы в складе:</h4>
-                            {warehouse.items.map((item) => (
-                              <div key={item.id} className="flex items-center justify-between p-3 bg-slate-700 rounded-lg">
-                                <div className="flex items-center gap-3">
-                                  <span className="text-2xl">{item.icon}</span>
-                                  <div>
-                                    <div className="font-medium">{item.name}</div>
-                                    <div className="text-sm text-slate-400">Макс. стак: {item.maxStack}</div>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <Badge className={getRarityColor(item.rarity)}>
-                                    {item.rarity}
-                                  </Badge>
-                                  <Badge variant="outline" className="border-slate-600 text-white">
-                                    {item.quantity}
-                                  </Badge>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </DialogContent>
-                    </Dialog>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-
-            <Alert className="bg-slate-800 border-slate-700 text-white">
-              <Icon name="Shield" className="h-4 w-4" />
-              <AlertDescription>
-                Система защищена от дублирования предметов и превышения лимитов складов
-              </AlertDescription>
-            </Alert>
-          </TabsContent>
-
-          <TabsContent value="crafting" className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <h3 className="text-2xl font-bold mb-4 text-white">Доступные рецепты</h3>
-                <div className="space-y-4">
-                  {recipes.map((recipe) => (
-                    <Card key={recipe.id} className="bg-slate-800 border-slate-700">
-                      <CardHeader>
-                        <CardTitle className="text-white flex items-center gap-2">
-                          <Icon name="Package" size={20} className="text-blue-400" />
-                          {recipe.name}
-                        </CardTitle>
-                        <CardDescription className="text-slate-400">
-                          Время создания: {recipe.craftingTime}с
-                        </CardDescription>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="space-y-3">
-                          <div>
-                            <h5 className="text-sm font-semibold text-slate-300 mb-2">Требуется:</h5>
-                            <div className="flex flex-wrap gap-2">
-                              {recipe.ingredients.map((ingredient, idx) => (
-                                <Badge key={idx} variant="outline" className="border-slate-600 text-white">
-                                  {ingredient.itemId}: {ingredient.quantity}
-                                </Badge>
-                              ))}
-                            </div>
-                          </div>
-                          
-                          <div className="flex items-center gap-2">
-                            <Icon name="ArrowRight" size={16} className="text-slate-400" />
-                            <Badge className="bg-green-600">
-                              Результат: {recipe.output.quantity}
-                            </Badge>
-                          </div>
-                          
-                          <Button 
-                            onClick={() => startCrafting(recipe.id)}
-                            className="w-full bg-blue-600 hover:bg-blue-700"
-                            disabled={craftingQueue.some(item => item.recipeId === recipe.id)}
-                          >
-                            {craftingQueue.some(item => item.recipeId === recipe.id) ? (
-                              <><Icon name="Clock" size={16} className="mr-2" />В процессе...</>
-                            ) : (
-                              <><Icon name="Hammer" size={16} className="mr-2" />Создать</>
-                            )}
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              </div>
-              
-              <div>
-                <h3 className="text-2xl font-bold mb-4 text-white">Очередь создания</h3>
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="pt-6">
-                    {craftingQueue.length === 0 ? (
-                      <div className="text-center text-slate-400 py-8">
-                        <Icon name="Clock" size={48} className="mx-auto mb-4" />
-                        <p>Очередь создания пуста</p>
                       </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {craftingQueue.map((item, idx) => {
-                          const recipe = recipes.find(r => r.id === item.recipeId);
-                          const elapsed = (Date.now() - item.startTime) / 1000;
-                          const progress = Math.min((elapsed / (recipe?.craftingTime || 1)) * 100, 100);
-                          
-                          return (
-                            <div key={idx} className="p-3 bg-slate-700 rounded-lg">
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="font-medium text-white">{recipe?.name}</span>
-                                <Badge className="bg-blue-600">
-                                  {Math.ceil((recipe?.craftingTime || 0) - elapsed)}с
-                                </Badge>
-                              </div>
-                              <Progress value={progress} className="h-2" />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-            </div>
-          </TabsContent>
+                    ))}
 
-          <TabsContent value="logistics" className="space-y-6">
-            <div className="text-center py-12">
-              <Icon name="Truck" size={64} className="mx-auto mb-4 text-purple-400" />
-              <h3 className="text-2xl font-bold mb-2 text-white">Логистическая система</h3>
-              <p className="text-slate-400 mb-6">Автоматическая транспортировка предметов между складами</p>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-4xl mx-auto">
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="pt-6 text-center">
-                    <Icon name="RotateCcw" size={32} className="mx-auto mb-3 text-green-400" />
-                    <h4 className="font-semibold text-white">Авто-сортировка</h4>
-                    <p className="text-sm text-slate-400">Активна</p>
-                  </CardContent>
-                </Card>
-                
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="pt-6 text-center">
-                    <Icon name="Zap" size={32} className="mx-auto mb-3 text-yellow-400" />
-                    <h4 className="font-semibold text-white">Быстрая доставка</h4>
-                    <p className="text-sm text-slate-400">Доступна</p>
-                  </CardContent>
-                </Card>
-                
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="pt-6 text-center">
-                    <Icon name="Shield" size={32} className="mx-auto mb-3 text-blue-400" />
-                    <h4 className="font-semibold text-white">Защита грузов</h4>
-                    <p className="text-sm text-slate-400">100% гарантия</p>
-                  </CardContent>
-                </Card>
-              </div>
+                    {/* Предметы на земле */}
+                    {itemDrops.filter(drop => !drop.collected).map((drop) => (
+                      <div
+                        key={drop.id}
+                        className="absolute w-6 h-6 flex items-center justify-center rounded-full bg-yellow-400 border-2 border-yellow-600 animate-pulse"
+                        style={{
+                          left: drop.x - 12,
+                          top: drop.y - 12
+                        }}
+                      >
+                        <span className="text-xs">
+                          {getItemData(drop.itemId)?.icon || '?'}
+                        </span>
+                      </div>
+                    ))}
+
+                    {/* Игрок */}
+                    <div
+                      className="absolute bg-orange-500 border-2 border-orange-600 rounded-full flex items-center justify-center text-white font-bold transition-all duration-75"
+                      style={{
+                        left: player.x - PLAYER_SIZE/2,
+                        top: player.y - PLAYER_SIZE/2,
+                        width: PLAYER_SIZE,
+                        height: PLAYER_SIZE
+                      }}
+                    >
+                      👤
+                    </div>
+                  </div>
+
+                  {/* Управление */}
+                  <div className="mt-4 text-center text-sm text-slate-400">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      <div>WASD / Стрелки - движение</div>
+                      <div>I - инвентарь</div>
+                      <div>E - склад (рядом)</div>
+                      <div>Собирайте предметы!</div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
-          </TabsContent>
-        </Tabs>
+
+            {/* Боковая панель */}
+            <div className="space-y-6">
+              {/* Статус игрока */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader>
+                  <CardTitle className="text-white text-sm">Статус</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="text-slate-400">Здоровье</span>
+                      <span className="text-white">{player.health}/{player.maxHealth}</span>
+                    </div>
+                    <Progress value={(player.health / player.maxHealth) * 100} />
+                  </div>
+                  
+                  <div>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="text-slate-400">Инвентарь</span>
+                      <span className="text-white">{player.inventory.length}/{player.maxInventorySlots}</span>
+                    </div>
+                    <Progress value={(player.inventory.length / player.maxInventorySlots) * 100} />
+                  </div>
+                  
+                  <div className="pt-2">
+                    <Button 
+                      onClick={() => setGameMode('inventory')} 
+                      className="w-full bg-blue-600 hover:bg-blue-700"
+                    >
+                      <Icon name="Package" size={14} className="mr-2" />
+                      Открыть инвентарь
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Быстрый инвентарь */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader>
+                  <CardTitle className="text-white text-sm">Быстрые слоты</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-3 gap-2">
+                    {Array.from({ length: 6 }, (_, index) => {
+                      const item = player.inventory[index];
+                      return (
+                        <div
+                          key={index}
+                          className={`aspect-square border border-slate-600 rounded flex flex-col items-center justify-center text-xs ${
+                            item ? 'bg-slate-700' : 'bg-slate-800'
+                          }`}
+                        >
+                          {item ? (
+                            <>
+                              <div className="text-lg">{item.icon}</div>
+                              <div className="text-xs font-bold">{item.quantity}</div>
+                            </>
+                          ) : (
+                            <div className="text-slate-500">—</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Задания */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader>
+                  <CardTitle className="text-white text-sm">Задания</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <div className="p-2 bg-slate-700 rounded text-xs">
+                    <div className="font-medium text-white">Сбор ресурсов</div>
+                    <div className="text-slate-400">Соберите 10 железа</div>
+                    <div className="text-yellow-400">{player.inventory.find(i => i.id === 'iron')?.quantity || 0}/10</div>
+                  </div>
+                  
+                  <div className="p-2 bg-slate-700 rounded text-xs">
+                    <div className="font-medium text-white">Исследователь</div>
+                    <div className="text-slate-400">Посетите все склады</div>
+                    <div className="text-yellow-400">0/3</div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
